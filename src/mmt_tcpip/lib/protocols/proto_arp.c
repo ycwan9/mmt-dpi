@@ -5,8 +5,90 @@
 #include "../mmt_common_internal_include.h"
 
 #include "arp.h"
+#include "ip_session_id_management.h"
 
 /////////////// PROTOCOL INTERNAL CODE GOES HERE ///////////////////
+
+// ARP session keyed by SPA+TPA (IP pair), ordered like IP sessions
+static void *arp_sessionizer(void *protocol_context, ipacket_t *ipacket, unsigned index, int *is_new_session) {
+    int offset = get_packet_offset_at_index(ipacket, index);
+    if (offset < 0) {
+        *is_new_session = 0;
+        return NULL;
+    }
+    // Only Ethernet/IPv4 ARP (hrd=1, pro=0x0800) is sessionized
+    uint16_t hrd = ntohs(*(uint16_t *)&ipacket->data[offset + 0]);
+    uint16_t pro = ntohs(*(uint16_t *)&ipacket->data[offset + 2]);
+    if (hrd != 0x0001 || pro != 0x0800) {
+        *is_new_session = 0;
+        return NULL;
+    }
+    uint32_t spa, tpa;
+    memcpy(&spa, &ipacket->data[offset + 14], sizeof(uint32_t));
+    memcpy(&tpa, &ipacket->data[offset + 24], sizeof(uint32_t));
+
+
+    mmt_session_key_t key;
+    memset(&key, 0, sizeof(key));
+    key.ip_type = 4;
+    key.next_proto = 0;
+    key.lower_ip_port = 0;
+    key.higher_ip_port = 0;
+    if (spa < tpa) {
+        key.lower_ip = &spa;
+        key.higher_ip = &tpa;
+        key.is_lower_initiator = 0;
+        key.is_lower_client = 0;
+    } else if (spa == tpa) {
+        key.lower_ip = &spa;
+        key.higher_ip = &tpa;
+        key.is_lower_initiator = 0;
+        key.is_lower_client = 0;
+    } else {
+        key.lower_ip = &tpa;
+        key.higher_ip = &spa;
+        key.is_lower_initiator = 1;
+        key.is_lower_client = 1;
+    }
+    // spa vs tpa determines this packet's direction relative to ordered key
+    // If spa == lower, direction is L2H (0), else H2L (1)
+    // For spa==tpa, direction 0
+    uint8_t this_pkt_dir;
+    if (spa == tpa) this_pkt_dir = 0;
+    else if (spa < tpa) this_pkt_dir = 0;
+    else this_pkt_dir = 1;
+    // get_session will copy key and allocate persistent IP ids
+    extern mmt_session_t *get_session(void *, mmt_session_key_t *, ipacket_t *, int *);
+    mmt_session_t *session = get_session(protocol_context, &key, ipacket, is_new_session);
+    if (session) {
+        session->last_packet_direction = this_pkt_dir;
+        // Also set setup direction for new sessions (mirrors IP)
+        if (*is_new_session) session->setup_packet_direction = this_pkt_dir;
+    }
+    return session;
+}
+int arp_session_cleanup_on_timeout(void *protocol_context, mmt_session_t *timedout_session, void *args) {
+    extern int delete_session_from_protocol_context(void *, void *);
+    extern void free_session_data(void *, void *, void *);
+    delete_session_from_protocol_context(protocol_context, timedout_session->session_key);
+    free_session_data(timedout_session->session_key, timedout_session, ((protocol_instance_t *)protocol_context)->args);
+    return 0;
+}
+static void *arp_setup_context(void *protocol_context, void *args) {
+    (void)protocol_context;(void)args;
+    extern internal_ip_proto_context_t *setup_ipv4_internal_context();
+    return setup_ipv4_internal_context();
+}
+static void arp_cleanup_context(void *protocol_context, void *args) {
+    (void)args;
+    protocol_instance_t *pi = (protocol_instance_t *)protocol_context;
+    if (pi && pi->args) {
+        extern int cleanup_ipv4_internal_context(internal_ip_proto_context_t *);
+        extern void close_ipv4_internal_context(protocol_instance_t *);
+        cleanup_ipv4_internal_context((internal_ip_proto_context_t *)pi->args);
+        close_ipv4_internal_context(pi);
+    }
+}
 
 
 static uint16_t arp_ar_hrd_get_value     (const ipacket_t * packet, unsigned proto_index);
@@ -251,6 +333,7 @@ uint8_t arp_ar_pln_get_value(const ipacket_t * packet, unsigned proto_index)
 
 /////////////// END OF PROTOCOL INTERNAL CODE    ///////////////////
 
+extern bool ipv4_session_comp(void *, void *);
 int init_proto_arp_struct()
 {
     protocol_t * protocol_struct = init_protocol_struct_for_registration(PROTO_ARP, PROTO_ARP_ALIAS);
@@ -260,7 +343,8 @@ int init_proto_arp_struct()
         for (; i < ARP_ATTRIBUTES_NB; i++) {
             register_attribute_with_protocol(protocol_struct, &arp_attributes_metadata[i]);
         }
-
+        register_sessionizer_function(protocol_struct, arp_sessionizer, arp_session_cleanup_on_timeout, ipv4_session_comp);
+        register_proto_context_init_cleanup_function(protocol_struct, arp_setup_context, arp_cleanup_context, NULL);
         return register_protocol(protocol_struct, PROTO_ARP);
     } else {
         return -1;
