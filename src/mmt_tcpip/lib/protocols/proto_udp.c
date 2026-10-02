@@ -16,6 +16,11 @@ static attribute_metadata_t udp_attributes_metadata[UDP_ATTRIBUTES_NB] = {
 
 int udp_pre_classification_function(ipacket_t * ipacket, unsigned index) {
     mmt_tcpip_internal_packet_t * packet = ipacket->internal_packet;
+    if (unlikely(packet == NULL)) {
+        // No IP session context (e.g. non-IP packet mis-routed here after
+        // session repointing). Stop classification instead of segfault.
+        return 0;
+    }
     int l4_offset = get_packet_offset_at_index(ipacket, index);
 
     if (packet->iphv6) {

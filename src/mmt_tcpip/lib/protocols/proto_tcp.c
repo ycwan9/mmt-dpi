@@ -416,6 +416,9 @@ void clean_session_payload(mmt_session_t * session, unsigned index){
 int tcp_pre_classification_function(ipacket_t * ipacket, unsigned index) {
     debug("[tcp_pre_classification_function] packet %"PRIu64" at index: %d\n",ipacket->packet_id,index);
     mmt_tcpip_internal_packet_t * packet = ipacket->internal_packet;
+    if (unlikely(packet == NULL)) {
+        return 0;
+    }
     int l4_offset = get_packet_offset_at_index(ipacket, index);
     if (packet->iphv6) {
         packet->l4_packet_len = (ipacket->p_hdr->caplen - l4_offset);
@@ -497,6 +500,9 @@ int tcp_pre_classification_function(ipacket_t * ipacket, unsigned index) {
 int tcp_pre_classification_function_with_reassemble(ipacket_t * ipacket, unsigned index) {
     debug("[tcp_pre_classification_function_with_reassemble] packet %"PRIu64" at index: %d\n",ipacket->packet_id,index);
     mmt_tcpip_internal_packet_t * packet = ipacket->internal_packet;
+    if (unlikely(packet == NULL)) {
+        return 0;
+    }
     int l4_offset = get_packet_offset_at_index(ipacket, index);
     if (packet->iphv6) {
         packet->l4_packet_len = (ipacket->p_hdr->caplen - l4_offset);
