@@ -31,7 +31,13 @@ static void *arp_sessionizer(void *protocol_context, ipacket_t *ipacket, unsigne
     mmt_session_key_t key;
     memset(&key, 0, sizeof(key));
     key.ip_type = 4;
-    key.next_proto = 0;
+    // Separate outer ARP vs GTP-inner ARP (same SPA/TPA can appear both
+    // outer as ETH.ARP and inner as ETH.IP.UDP.GTP.ETH.ARP, e.g. c1 pkt 6 vs 3940).
+    // ipv4_session_comp compares next_proto first, so reuse it as tunnel flag.
+    {
+        unsigned gtp_idx = get_protocol_index_by_id(ipacket, PROTO_GTP);
+        key.next_proto = (gtp_idx != (unsigned)-1 && gtp_idx < (unsigned)index) ? 1 : 0;
+    }
     key.lower_ip_port = 0;
     key.higher_ip_port = 0;
     if (spa < tpa) {
